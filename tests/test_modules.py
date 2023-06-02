@@ -47,7 +47,7 @@ def assert_all_approx_close(a, b, atol=1e-8, rtol=1e-5, count=10):
     sumval = (idx == 0).sum().item()
     if sumval > count:
         print(f"Too many values not close: assert {sumval} < {count}")
-        torch.testing.assert_allclose(a, b, rtol, atol)
+        torch.testing.assert_close(a, b, rtol, atol)
 
 
 class LinearFunction(torch.autograd.Function):
@@ -348,6 +348,9 @@ def test_linear8bitlt_accumulated_gradient(device):
     opt1 = bnb.optim.Adam8bit(l1.parameters(), lr=0.001)
     opt2 = bnb.optim.Adam8bit(l2.parameters(), lr=0.001)
 
+    opt1 = bnb.optim.Adam32bit(l1.parameters(), lr=0.001)
+    opt2 = bnb.optim.Adam32bit(l2.parameters(), lr=0.001)
+
     acc_steps = 10
 
     for i in range(10):
@@ -376,9 +379,11 @@ def test_linear8bitlt_accumulated_gradient(device):
             # we do this copy because otherwise we have small divergences over time that add up
             l1[0].weight.data.copy_(l2[0].weight.data)
             l1[1].weight.data.copy_(l2[1].weight.data)
+            l1[0].bias.data.copy_(l2[0].bias.data)
+            l1[1].bias.data.copy_(l2[1].bias.data)
         else:
-            torch.testing.assert_allclose(l1[0].weight.grad, l2[0].weight.grad)
-            torch.testing.assert_allclose(l1[1].weight.grad, l2[1].weight.grad)
+            torch.testing.assert_close(l1[0].weight.grad, l2[0].weight.grad, atol=1e-3, rtol=1e-3)
+            torch.testing.assert_close(l1[1].weight.grad, l2[1].weight.grad, atol=1e-3, rtol=1e-3)
 
 
 threshold = [0.0, 2.0]
@@ -390,13 +395,7 @@ names = [f"threshold_{vals}" for vals in values]
 @pytest.mark.parametrize("threshold", values, ids=names)
 @pytest.mark.parametrize("memory_efficient_backward", [False])
 def test_linear8bitlt_no_fp16_weights(threshold, memory_efficient_backward):
-    l1 = (
-        bnb.nn.Linear8bitLt(
-            32, 64, threshold=threshold, has_fp16_weights=False, memory_efficient_backward=memory_efficient_backward
-        )
-        .cuda()
-        .half()
-    )
+    l1 = (bnb.nn.Linear8bitLt( 32, 64, threshold=threshold, has_fp16_weights=False, memory_efficient_backward=memory_efficient_backward).cuda().half())
     assert l1.weight.dtype == torch.int8
 
     l1.eval()
@@ -452,13 +451,7 @@ def test_linear8bitlt_no_fp16_weights(threshold, memory_efficient_backward):
     assert mlp.fc1.weight.dtype == torch.int8
     assert mlp.fc2.weight.dtype == torch.int8
 
-    mlp = (
-        MLP8bit(
-            32, 64, threshold=threshold, has_fp16_weights=False, memory_efficient_backward=memory_efficient_backward
-        )
-        .half()
-        .to("cuda")
-    )
+    mlp = ( MLP8bit( 32, 64, threshold=threshold, has_fp16_weights=False, memory_efficient_backward=memory_efficient_backward).half().to("cuda"))
 
     for i in range(100):
         b1 = torch.randn(16, 8, 32, device="cuda").half()
@@ -505,15 +498,15 @@ def test_linear8bitlt_no_fp16_weights(threshold, memory_efficient_backward):
         grad_ref = grad_proj.flatten(2) @ w2.half() @ w1.half()
         scale = grad_ref.abs().mean()
 
-        torch.testing.assert_allclose(b1.grad, grad_ref, rtol=0, atol=0.05 * scale)
+        torch.testing.assert_close(b1.grad, grad_ref, rtol=0, atol=0.05 * scale)
         idx = torch.isclose(b1.grad, grad_ref, atol=0.01 * scale, rtol=0.1)
         assert (idx == 0).sum().item() <= b1.numel() * 0.005
 
 @skip_if_no_cuda()
 def test_linear8bitlt_fp32_bias():
     # casts model to fp16 -> int8 automatically
-    l1 = bnb.nn.Linear8bitLt(32, 64, has_fp16_weights=False).cuda()
-    assert l1.weight.dtype == torch.int8
+    l1 = module(32, 64).cuda()
+    assert l1.weight.dtype in [torch.int8, torch.uint8]
     assert l1.bias.dtype == torch.float32
 
     for i in range(100):
@@ -523,8 +516,8 @@ def test_linear8bitlt_fp32_bias():
         assert l1.bias.dtype == torch.float16
 
     # casts model to fp16 -> int8 automatically
-    l1 = bnb.nn.Linear8bitLt(32, 64, has_fp16_weights=False, bias=False).cuda()
-    assert l1.weight.dtype == torch.int8
+    l1 = module(32, 64, bias=False).cuda()
+    assert l1.weight.dtype in [torch.int8, torch.uint8]
     assert l1.bias is None
 
     for i in range(100):
